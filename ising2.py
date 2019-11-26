@@ -5,7 +5,7 @@ import numpy as np
 import pdb
 import os
 from tqdm import tqdm
-from density_calculator import *
+# from density_calculator import *
 
 
 def region_maker(L, s):
@@ -343,6 +343,9 @@ def twopt_average(spins, regions, weights, delta, weight_type=1):
   estimators = numpy.zeros((L, ) * d)
 
   # First normalize the weights
+  # It is assumed that the boundary weights are non-zero!
+  assert numpy.sum((regions == 0) * weights) != 0
+
   weights = normalize_weights(weights, regions)
 
   # Bring the points displaced by delta to the point x
@@ -375,15 +378,19 @@ def twopt_average(spins, regions, weights, delta, weight_type=1):
     ## Turn the site by site weights into 2 point correlator weights
 
     # Only in the case of two different non-boundary regions do we product the weights together.
-    weights = numpy.where(numpy.logical_and(regions * yregions != 0, regions != yregions),
+    new_weights = numpy.where(numpy.logical_and(regions * yregions != 0, regions != yregions),
                           weights * yweights,
                           numpy.maximum(weights, yweights))
+  elif weight_type == 2:
+    new_weights = weights
 
   # Perform a weighted average over the spatial dimensions
-  estimator = numpy.average(config_mean, weights=weights)
+  
+  estimator = numpy.average(config_mean, weights=new_weights)
+
+  # pdb.set_trace()
 
   return estimator
-
 
 def defunct():
   return 0

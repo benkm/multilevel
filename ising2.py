@@ -1,10 +1,13 @@
 import numpy
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import colors
 import numpy as np
 import pdb
 import os
 from tqdm import tqdm
+
+matplotlib.use('TkAgg')
 # from density_calculator import *
 
 
@@ -43,7 +46,6 @@ def region_maker(L, s):
     else:
       return label(x, n - 1) * s[n - 1] + x[n - 1] // size[n - 1]
 
-  # If there is no s then there is only one region with no boudary
   if numpy.product(numpy.array(s)) == 1:
     def which_region(x, x2=None, x3=None):
       return 1
@@ -312,10 +314,52 @@ def normalize_weights(weights, regions):
   return weights
 
 
-def twopt_average(spins, regions, weights, delta, weight_type=1):
+def twopt_site_by_site(spins, regions, delta):
+  """
+    Utility function
+    Does a site by site twopt mean, before the weighting stage. Only recieves
+    data for a single N value
+  """
+  M = spins.shape[0]
+  L = regions.shape[0]
+  d = len(regions.shape)
+  assert regions.shape == spins.shape[1:]
+
+  # Bring the points displaced by delta to the point x
+  yspins = spins
+  yregions = regions
+
+  for i in range(d):
+    yspins = numpy.roll(yspins, -delta[i], axis=i + 1)
+
+    # Do the same with regions and weights
+    yregions = numpy.roll(yregions, -delta[i], axis=i)
+
+  # Perform an outer product over the configuration axis
+  # This produces an array of shape (M, M, L, ..., L)
+  combinatoric = numpy.einsum('j...,k...->jk...', spins, yspins)
+
+  # BE CAREFUL here! We've made combinatoric states. However, this isn't physically
+  # valid for twopt functions between points in the same region. This isn't valid
+  # within region. It's okay on the boundary because these states are automatically
+  # constant along the M-axis.
+  within_region = (spins * yspins).reshape((M, 1) + spins.shape[1:]).repeat(M, axis=1)
+
+  # numpy where automatically applies the condition to the highest axes of the
+  # array, in this case the (L, L) axes of (M, M, L, L)
+  outer_product = numpy.where(regions != yregions, combinatoric, within_region)
+
+  # Average over the 2 outer product directions and over the N axis
+  config_mean = numpy.mean(outer_product, axis=(0, 1))
+
+  return config_mean
+
+
+def twopt_average(spins, regions, weights, delta, weight_type=1, cap=True):
   """
     Here we are finding the real space twopt function of many spin configurations,
-    which are assumed to share the same boundary.
+    which are assumed to share the same boundary. This function also gives the
+    sample standard deviation 
 
     spins : (N, M, L, ..., L) numpy array of floats, spins[i] is the ith spin configuration
         from a group of spins holding
@@ -327,6 +371,8 @@ def twopt_average(spins, regions, weights, delta, weight_type=1):
       weights on the boundary are 1, or average to 1.
     weight_type : int, if 1 then the weights are 'onept' site by site weights.
       If 2 then these are the twopt weights, ready to be used directly.
+    cap : bool, if True then the weights are capped at their maximum possible value,
+      e.g. M for onept weights and M^2 for twopt weights.
 
     N is the number of boundary updates
     where M is the number of sublattice samples
@@ -337,10 +383,7 @@ def twopt_average(spins, regions, weights, delta, weight_type=1):
   M = spins.shape[1]
   L = regions.shape[0]
   d = len(regions.shape)
-  assert spins.shape[2] == L
-  assert len(spins.shape) == d + 2
-
-  estimators = numpy.zeros((L, ) * d)
+  assert regions.shape == spins.shape[2:]
 
   # First normalize the weights
   # It is assumed that the boundary weights are non-zero!
@@ -348,49 +391,104 @@ def twopt_average(spins, regions, weights, delta, weight_type=1):
 
   weights = normalize_weights(weights, regions)
 
-  # Bring the points displaced by delta to the point x
-  yspins = spins
-  yregions = regions
   yweights = weights
+  yregions = regions
+
   for i in range(d):
-    yspins = numpy.roll(yspins, -delta[i], axis=i + 2)
-
-    # Do the same with regions and weights
-    yregions = numpy.roll(yregions, -delta[i], axis=i)
     yweights = numpy.roll(yweights, -delta[i], axis=i)
-  
-  # Perform an outer product over the configuration axis
-  # This produces an array of shape (N, M, M, L, ..., L)
-  combinatoric = numpy.einsum('ij...,ik...->ijk...', spins, yspins)
-
-  # BE CAREFUL here! We've made combinatoric states. However, this isn't physically
-  # valid for twopt functions between points in the same region. This isn't valid
-  # within region. It's okay on the boundary because these states are automatically
-  # constant along the M-axis.
-  within_region = (spins * yspins).reshape((N, M, 1) + spins.shape[2:]).repeat(M, axis=2)
-
-  outer_product = numpy.where(regions != yregions, combinatoric, within_region)
-
-  # Average over the 2 outer product directions and over the N axis
-  config_mean = numpy.mean(outer_product, axis=(0, 1, 2))
+    yregions = numpy.roll(yregions, -delta[i], axis=i)
 
   if weight_type == 1:
+    # Cap the weights at their maximum possible value of M and minimum value
+    # of 1
+    if cap:
+      weights = numpy.where(regions, numpy.minimum(M, weights), 1)
+      weights = numpy.maximum(1, weights)
+
     ## Turn the site by site weights into 2 point correlator weights
 
     # Only in the case of two different non-boundary regions do we product the weights together.
     new_weights = numpy.where(numpy.logical_and(regions * yregions != 0, regions != yregions),
                           weights * yweights,
                           numpy.maximum(weights, yweights))
+
   elif weight_type == 2:
+    # Cap the weights at their maximum possible value of M^2
+    if cap:
+      weights = numpy.where(regions, numpy.minimum(M ** 2, weights), 1)
+      weights = numpy.maximum(1, weights)
+
     new_weights = weights
 
-  # Perform a weighted average over the spatial dimensions
+  results = numpy.zeros(N)
+
+  for i in range(N):
+    config_mean = twopt_site_by_site(spins[i], regions, delta)
+    
+    results[i] = numpy.average(config_mean, weights=new_weights)
+
+  mean, std = numpy.mean(results), numpy.std(results, ddof=1) / numpy.sqrt(N)
   
-  estimator = numpy.average(config_mean, weights=new_weights)
+  return mean, std
 
-  # pdb.set_trace()
 
-  return estimator
+def get_twopt_weights(spins, regions, delta, cap=True):
+  """
+    Uses the standard deviation to estimate twopt weights
+  """
+  N = spins.shape[0]
+  M = spins.shape[1]
+  L = spins.shape[2]
+  assert regions.shape == spins.shape[2:]
+  d = len(regions.shape)
+
+  twopt_weights = numpy.zeros(regions.shape)
+
+  results = numpy.zeros((N, ) + regions.shape)
+
+  for i in range(N):
+    results[i] = twopt_site_by_site(spins[i], regions, delta)
+  
+  twopt_weights = 1 / (numpy.std(results, axis=0, ddof=1) ** 2)
+
+  if cap:
+    yregions = regions
+    for i in range(d):
+      yregions = numpy.roll(yregions, -delta[i], axis=i)
+    
+    twopt_weights = normalize_weights(twopt_weights, regions)
+
+    twopt_weights = numpy.where(regions,
+                      numpy.where(regions != yregions,
+                        numpy.minimum(M ** 2, twopt_weights),
+                        numpy.minimum(M, twopt_weights)),
+                        1)
+    twopt_weights = numpy.maximum(1, twopt_weights)
+  
+  return twopt_weights
+
+
+def get_onept_weights(spins, regions, cap=True):
+  # Average over the M axis first
+  spins_aved = numpy.mean(spins, axis=1)
+
+  # Then find the standard deviation over the N axis
+  std = numpy.std(spins_aved, axis=0, ddof=1)
+
+  # Use inverse varience method
+  weights = 1 / (std ** 2)
+
+  # Normalize and set boundary to 1
+  weights = normalize_weights(weights, regions)
+  weights = numpy.where(regions, weights, 1)
+
+  if cap:
+    M = spins.shape[1]
+    weights = numpy.minimum(M, weights)
+    weights = numpy.maximum(1, weights)
+
+  return weights
+
 
 def defunct():
   return 0

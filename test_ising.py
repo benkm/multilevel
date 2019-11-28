@@ -185,17 +185,17 @@ def test_twopt_average_basics():
   # First check the simple twopt weights
   weights = numpy.ones((L, L))
   delta = (0, 0)
-  estimator = twopt_average(spins, regions, weights, delta, weight_type=2)
+  estimator, std = twopt_average(spins, regions, weights, delta, weight_type=2)
 
   # Compare to hand caculation
-  assert estimator == numpy.mean(regions ** 2)
+  assert numpy.abs(estimator - numpy.mean(regions ** 2)) < 10 ** -10
 
   # I think that for any way of rolling the array the result will be lower
   for i in range(1, L):
     for j in range(1, L):
       delta = (i, j)
 
-      estimator_2 = twopt_average(spins, regions, weights, delta, weight_type=2)
+      estimator_2, std_2 = twopt_average(spins, regions, weights, delta, weight_type=2)
 
       assert estimator_2 < estimator
 
@@ -209,7 +209,7 @@ def test_twopt_average_basics():
         delta = (i, j)
 
         weights = numpy.random.rand(L, L)
-        estimator = twopt_average(spins, regions, weights, delta, weight_type=weight_type)
+        estimator, std = twopt_average(spins, regions, weights, delta, weight_type=weight_type)
 
         assert numpy.abs(estimator - x ** 2) < 10 ** -10
 
@@ -236,17 +236,8 @@ def test_twopt_average_simplest_example():
   spins = numpy.zeros((N, M, L, L)) + N_randomness * weights_ext + M_randomness * numpy.sqrt(1 - weights_ext ** 2)
 
   # Let's check that the boundarys indeed have a larger standard dev
-  # Perform an average in the M axis
-  boot_spins = numpy.mean(spins, axis=1)
-  random = numpy.random.randint(0, N, size=(100, N))
-  results = numpy.zeros((100, L, L))
-
-  for i in range(100):
-    some_spins = boot_spins[random[i]]
-    results[i] = numpy.mean(some_spins, axis=0)
-
-  means = numpy.mean(results, axis=0)
-  stds = numpy.std(results, axis=0)
+  means = numpy.mean(numpy.mean(spins, axis=1), axis=0)
+  stds = numpy.std(numpy.mean(spins, axis=1), axis=0, ddof=1)
 
   boundary = regions == 0
   non_boundary = regions != 0
@@ -257,24 +248,12 @@ def test_twopt_average_simplest_example():
   # The boundary std larger than the non_boundary
   assert boundary_av_std > non_boundary_av_std
 
-  # Now let's use the weights, and perform a bootstrap
-  # First try with no delta
-  estimator_1 = numpy.zeros(100)
-  estimator_2 = numpy.zeros(100)
+  delta = (0, 0)
+  # naiive method
+  mean_1, std_1 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
 
-  for i in range(100):
-    delta = (0, 0)
-    # naiive method
-    estimator_1[i] = twopt_average(spins[random[i]], regions, numpy.ones((L, L)), delta, weight_type=2)
-
-    # Higher weights have more varience in the M direction
-    estimator_2[i] = twopt_average(spins[random[i]], regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
-  
-  mean_1 = numpy.mean(estimator_1)
-  mean_2 = numpy.mean(estimator_2)
-  
-  std_1 = numpy.std(estimator_1)
-  std_2 = numpy.std(estimator_2)
+  # Higher weights have more varience in the M direction
+  mean_2, std_2 = twopt_average(spins, regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
 
   # Check that knowledge of the weights helped us choose a better estimator
   assert std_2 < std_1
@@ -289,22 +268,14 @@ def test_twopt_average_simplest_example():
   # lets check this
   delta = (4, 4)
 
-  estimator_3 = numpy.zeros(100)
-  estimator_4 = numpy.zeros(100)
+  # naiive method
+  mean_3, std_3 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
 
-  for i in range(100):
-    # naiive method
-    estimator_3[i] = twopt_average(spins[random[i]], regions, numpy.ones((L, L)), delta, weight_type=2)
+  # Higher weights have more varience in the M direction
+  mean_4, std_4 = twopt_average(spins, regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
 
-    # Higher weights have more varience in the M direction
-    estimator_4[i] = twopt_average(spins[random[i]], regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
-  
-  mean_3 = numpy.mean(estimator_3)
-  mean_4 = numpy.mean(estimator_4)
-  
-  std_3 = numpy.std(estimator_3)
-  std_4 = numpy.std(estimator_4)
-
+  # Check that knowledge of the weights helped us choose a better estimator
+  assert std_2 < std_1
   # Check that the improvement is better than previously
   assert std_4 / std_3 < std_2 / std_1
 
@@ -331,24 +302,14 @@ def test_twopt_average_next_simplest_example():
   N_randomness = numpy.random.normal(0, 1, (N, 1, L, L)).repeat(M, axis=1)
   M_randomness = numpy.random.normal(0, 1, (N, M, L, L))
 
-
   # Add the N and M randomness. Think of a point with weight 0 as being on the boundary or
   # completely determined by the boundary, while a point with weight 1 is completely independent
   # of the boundary
   spins = numpy.zeros((N, M, L, L)) + N_randomness * weights_ext + M_randomness * numpy.sqrt(1 - weights_ext ** 2)
 
   # Let's check that the boundarys indeed have a larger standard dev
-  # Perform an average in the M axis
-  boot_spins = numpy.mean(spins, axis=1)
-  random = numpy.random.randint(0, N, size=(100, N))
-  results = numpy.zeros((100, L, L))
-
-  for i in range(100):
-    some_spins = boot_spins[random[i]]
-    results[i] = numpy.mean(some_spins, axis=0)
-
-  means = numpy.mean(results, axis=0)
-  stds = numpy.std(results, axis=0)
+  means = numpy.mean(numpy.mean(spins, axis=1), axis=0)
+  stds = numpy.std(numpy.mean(spins, axis=1), axis=0, ddof=1)
 
   boundary = regions == 0
   non_boundary = regions != 0
@@ -359,24 +320,12 @@ def test_twopt_average_next_simplest_example():
   # The boundary std larger than the non_boundary
   assert boundary_av_std > non_boundary_av_std
 
-  # Now let's use the weights, and perform a bootstrap
-  # First try with no delta
-  estimator_1 = numpy.zeros(100)
-  estimator_2 = numpy.zeros(100)
+  delta = (0, 0)
+  # naiive method
+  mean_1, std_1 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
 
-  for i in range(100):
-    delta = (0, 0)
-    # naiive method
-    estimator_1[i] = twopt_average(spins[random[i]], regions, numpy.ones((L, L)), delta, weight_type=2)
-
-    # Higher weights have more varience in the M direction
-    estimator_2[i] = twopt_average(spins[random[i]], regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
-  
-  mean_1 = numpy.mean(estimator_1)
-  mean_2 = numpy.mean(estimator_2)
-  
-  std_1 = numpy.std(estimator_1)
-  std_2 = numpy.std(estimator_2)
+  # Higher weights have more varience in the M direction
+  mean_2, std_2 = twopt_average(spins, regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
 
   # Check that knowledge of the weights helped us choose a better estimator
   assert std_2 < std_1
@@ -391,22 +340,14 @@ def test_twopt_average_next_simplest_example():
   # lets check this
   delta = (4, 4)
 
-  estimator_3 = numpy.zeros(100)
-  estimator_4 = numpy.zeros(100)
+  # naiive method
+  mean_3, std_3 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
 
-  for i in range(100):
-    # naiive method
-    estimator_3[i] = twopt_average(spins[random[i]], regions, numpy.ones((L, L)), delta, weight_type=2)
+  # Higher weights have more varience in the M direction
+  mean_4, std_4 = twopt_average(spins, regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
 
-    # Higher weights have more varience in the M direction
-    estimator_4[i] = twopt_average(spins[random[i]], regions, 1 / (weights ** 2 * (1 - 1 / M) + 1 / M), delta, weight_type=1)
-  
-  mean_3 = numpy.mean(estimator_3)
-  mean_4 = numpy.mean(estimator_4)
-  
-  std_3 = numpy.std(estimator_3)
-  std_4 = numpy.std(estimator_4)
-
+  # Check that knowledge of the weights helped us choose a better estimator
+  assert std_2 < std_1
   # Check that the improvement is better than previously
   assert std_4 / std_3 < std_2 / std_1
 
@@ -415,6 +356,93 @@ def test_twopt_average_next_simplest_example():
   assert mean_3 + 5 * std_3 > 0
   assert mean_4 - 5 * std_4 < 0
   assert mean_4 + 5 * std_4 > 0
+
+
+def test_twopt_weights():
+  L = 8
+  N = 20
+  M = 20
+  no_samples = 100
+  regions = region_maker(L, (2, 2))
+  spin_fraction = 1 / 4 # Fraction of spins used to find weights
+
+  # Let's check that given knowledge of the error by lattice site, we can achieve
+  # a reduced error through use of weights
+  weights = numpy.where(regions,
+                        numpy.random.rand(L, L),
+                        1)
+
+  weights_ext = weights.reshape((1, 1, L, L)).repeat(N, axis=0).repeat(M, axis=1)                        
+
+  N_randomness = numpy.random.normal(0, 1, (N, 1, L, L)).repeat(M, axis=1)
+  M_randomness = numpy.random.normal(0, 1, (N, M, L, L))
+
+  # Add the N and M randomness. Think of a point with weight 0 as being on the boundary or
+  # completely determined by the boundary, while a point with weight 1 is completely independent
+  # of the boundary
+  spins = numpy.zeros((N, M, L, L)) + N_randomness * weights_ext + M_randomness * numpy.sqrt(1 - weights_ext ** 2)
+
+  # Let's check that the boundarys indeed have a larger standard dev
+  means = numpy.mean(numpy.mean(spins, axis=1), axis=0)
+  stds = numpy.std(numpy.mean(spins, axis=1), axis=0, ddof=1)
+
+  boundary = regions == 0
+  non_boundary = regions != 0
+
+  boundary_av_std = numpy.sum(boundary * stds) / numpy.sum(boundary)
+  non_boundary_av_std = numpy.sum(non_boundary * stds) / numpy.sum(non_boundary)
+
+  # The boundary std larger than the non_boundary
+  assert boundary_av_std > non_boundary_av_std
+
+  delta = (0, 0)
+
+  # Use the first spin fraction percent of the spins to obtain weights
+  twopt_weights = get_twopt_weights(spins[:int(spin_fraction * N)], regions, delta)
+
+  # naiive method - use all the spins
+  mean_1, std_1 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
+
+  # Higher weights have more varience in the M direction
+  # Test with rest of the spins
+  mean_2, std_2 = twopt_average(spins[int(spin_fraction * N):], regions, twopt_weights, delta, weight_type=2)
+
+  # Check that knowledge of the weights helped us choose a better estimator
+  assert std_2 < std_1
+
+  # Check that the answers are correct to 5 sigma
+  assert mean_1 - 5 * std_1 < 1
+  assert mean_1 + 5 * std_1 > 1
+  assert mean_2 - 5 * std_2 < 1
+  assert mean_2 + 5 * std_2 > 1
+
+  # Now, if we have a larger delta, then even more benefit can come from the combinatorics,
+  # lets check this
+  delta = (4, 4)
+
+  # Use the first spin fraction percent of the spins to obtain weights
+  twopt_weights = get_twopt_weights(spins[:int(spin_fraction * N)], regions, delta)
+
+  # naiive method - use all the spins
+  mean_3, std_3 = twopt_average(spins, regions, numpy.ones((L, L)), delta, weight_type=2)
+
+  # Higher weights have more varience in the M direction
+  # Test with rest of the spins
+  mean_4, std_4 = twopt_average(spins[int(spin_fraction * N):], regions, twopt_weights, delta, weight_type=2)
+
+  # Check that knowledge of the weights helped us choose a better estimator
+  assert std_2 < std_1
+  # Check that the improvement is better than previously
+  assert std_4 / std_3 < std_2 / std_1
+
+  # Check the answers are correct to 5 sigma
+  assert mean_3 - 5 * std_3 < 0
+  assert mean_3 + 5 * std_3 > 0
+  assert mean_4 - 5 * std_4 < 0
+  assert mean_4 + 5 * std_4 > 0
+
+  pdb.set_trace()
+
 
 # def test_non_boundary():
 #   my_non_boundary = non_boundary(4, splitting=(1, 2))

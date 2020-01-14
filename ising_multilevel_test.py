@@ -250,7 +250,7 @@ def get_data(L, beta, N, M, delta, splitting, fitting_size, weight_types='all', 
 
 
 def investigate_delta_beta(beta):
-  L = 8
+  L = 32
   N = 100
   M = 100
   splitting = (2, 2)
@@ -428,7 +428,7 @@ def investigate_delta_beta(beta):
   # return to_return
 
 
-def investigate_p_correlator(beta):
+def bootstrap(beta):
   L = 32
   N = 100
   M = 100
@@ -440,7 +440,115 @@ def investigate_p_correlator(beta):
   Mstep = 100
   rerun = True
   connected = True
+  check_connected = False
   flip = True # Controls whether the mean spin of a config is forced to be non-negative
+  deltas = [(5, 12)]
+  sample_no = 5
+
+  full_results_single = numpy.zeros((L, L, N * M))
+  full_results_onept = numpy.zeros((L, L, N - fitting_size))
+
+  # # Generate the N*M states for the single threaded method
+  single_spins = generate_states_1_1(L, beta, N * M, step, initial, initial_spins=numpy.ones((L, L)), rerun=False)
+
+  # # # Generate the split states
+  spins = generate_states_splitting(L, beta, N, M, Mstep, splitting, N * M, initial, Nstep=Nstep, source_file_step=step, rerun=False)
+
+  directory = f"../data/ising/p_correlator/L{L}/b{beta:.3f}/"
+
+  regions = region_maker(L, splitting)
+
+  # Generate random numbers for resampling
+  resampling_multi = numpy.random.randint(0, N, size=(sample_no, N))
+  resampling_single = numpy.random.randint(0, N * M, size=(sample_no, N * M))
+
+  full_results_multi = {}
+  full_results_single = {}
+
+  if rerun:
+    for delta in deltas:
+      results_multi = numpy.zeros(sample_no)
+      results_single = numpy.zeros(sample_no)
+
+      for i in range(sample_no):
+        print(f"=============BOOTSTRAP SAMPLE {i}==============")
+
+        # Resample the data
+        spins_temp = spins[resampling_multi[i]]
+        single_spins_temp = single_spins[resampling_single[i]]
+
+        spins_fitting = spins_temp[:fitting_size]
+        spins_data = spins_temp[fitting_size:]
+
+        if flip:
+          single_negative = (numpy.mean(single_spins_temp, axis=(1, 2)) < 0)
+
+          # Average over the M axis as well as the spatial axes of the lattice
+          negative = (numpy.mean(spins_data, axis=(1, 2, 3)) < 0)
+
+          single_spins_temp[single_negative] = -single_spins_temp[single_negative]
+          spins_data[negative] = -spins_data[negative]
+          pdb.set_trace()
+
+        if connected:
+          ## Remove the disconnected part, keep track of this for later
+          single_spin_mag = numpy.mean(single_spins_temp)
+          single_spins_temp = single_spins_temp - single_spin_mag
+
+        # Extract onept weights from fitting spins
+        onept_weights = get_onept_weights(spins_fitting, regions, cap=False)
+
+        # Symmetrise onept weights with sublattice symmetry group
+        onept_weights_sym = use_symmetry(onept_weights, splitting)
+        onept_weights_sym = numpy.where(regions, numpy.minimum(M, onept_weights_sym), 1)
+
+        print(f"Calculating for delta = {delta[0]}, {delta[1]}")
+
+        # Combine the onept weights to make twopt weights
+        onept_comb = combine_onept_weights(onept_weights_sym, regions, (delta[0], delta[1]))
+        
+        if connected:
+          # Perform some manipulation to get a better variance
+          C = 0.5 * numpy.average(numpy.mean(spins_data, axis=(0,1)), weights=onept_comb)
+          C += 0.5 * numpy.average(numpy.mean(numpy.roll(numpy.roll(spins_data, -delta[1], axis=3), -delta[0], axis=2), axis=(0,1)), weights=onept_comb)
+          spins_data_temp = spins_data - C
+
+        else:
+          spins_data_temp = spins_data
+        
+        results_multi[i] = twopt_average(spins_data_temp, regions, onept_comb, (delta[0], delta[1]))[0]
+        
+        results_single[i] = twopt_average(single_spins_temp.reshape((N * M, 1, L, L)), regions, numpy.ones((L, L)), (delta[0], delta[1]))[0]
+
+        if connected:
+          results_multi[i] += C ** 2
+          results_single[i] += single_spin_mag ** 2
+        
+        if check_connected:
+          unconnected_onept = twopt_average(spins_data, regions, onept_comb, (delta[0], delta[1]))[0]
+
+          assert numpy.abs(numpy.mean(temp_results_onept[i, k]) - numpy.mean(unconnected_onept)) < 10 ** -10
+          print(f"Stats boost for connected : {numpy.std(unconnected_onept)/numpy.std(temp_results_onept[i, k])} times")
+
+      full_results_multi[delta] = results_multi
+      full_results_single[delta] = results_single
+
+  pdb.set_trace()
+
+def investigate_p_correlator(beta):
+  L = 32
+  N = 100
+  M = 100
+  splitting = (2, 2)
+  fitting_size = int(numpy.rint(0.2 * N))
+  initial = 1000
+  step = 100
+  Nstep = 100
+  Mstep = 100
+  rerun = False
+  connected = True
+  check_connected = False
+  flip = False # Controls whether the mean spin of a config is forced to be non-negative
 
   full_results_single = numpy.zeros((L, L, N * M))
   full_results_onept = numpy.zeros((L, L, N - fitting_size))
@@ -497,9 +605,7 @@ def investigate_p_correlator(beta):
   
   if rerun:
     # Use symmetry and save computer time
-    temp_results_single = {}
     temp_results_onept = {}
-
     for i in range(0, L//2 + 1):
       for k in range(L):
         print(f"Calculating for delta = {i}, {k}")
@@ -516,11 +622,23 @@ def investigate_p_correlator(beta):
         else:
           spins_data_temp = spins_data
         
-        temp_results_single[i, k] = twopt_average(single_spins.reshape((N * M, 1, L, L)), regions, numpy.ones((L, L)), (i, k), full_average=False)
         temp_results_onept[i, k] = twopt_average(spins_data_temp, regions, onept_comb, (i, k), full_average=False)
         
         if connected:
           temp_results_onept[i, k] += C ** 2
+
+        if check_connected:
+          unconnected_onept = twopt_average(spins_data, regions, onept_comb, (i, k), full_average=False) 
+
+          assert numpy.abs(numpy.mean(temp_results_onept[i, k]) - numpy.mean(unconnected_onept)) < 10 ** -10
+          print(f"Stats boost for connected : {numpy.std(unconnected_onept)/numpy.std(temp_results_onept[i, k])} times")
+
+    temp_results_single = {}
+    for i in range(0, L//2 + 1):
+      for k in range(L):        
+        temp_results_single[i, k] = twopt_average(single_spins.reshape((N * M, 1, L, L)), regions, numpy.ones((L, L)), (i, k), full_average=False)
+    
+        if connected:
           temp_results_single[i, k] += single_spin_mag ** 2
 
     for i in range(L):
@@ -534,7 +652,7 @@ def investigate_p_correlator(beta):
         
         full_results_single[i, j] = temp_results_single[i_label, j_label]
         full_results_onept[i, j] = temp_results_onept[i_label, j_label]
-
+  
   if not os.path.isdir(directory):
     os.makedirs(directory)
   
@@ -662,15 +780,129 @@ def investigate_p_correlator(beta):
   plt.savefig(f"{directory}realspace_twopt_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
   plt.close()
 
+  plt.errorbar(x_s, single_twopt, yerr=single_err, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt, yerr=onept_err, label="onept", ls='', capsize=2)
+  plt.legend()
+  plt.yscale('log')
 
+  # Cut the scale for ease of reading
+  plt.ylim(max(10 ** -3, numpy.min(single_twopt)), 1.1)
+
+  plt.savefig(f"{directory}realspace_twopt_log_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  # Produce the same graph in momentum space
+  x_s = numpy.zeros(L ** 2)
+  single_twopt_mom = numpy.zeros(L ** 2)
+  single_err_mom = numpy.zeros(L ** 2)
+  onept_twopt_mom = numpy.zeros(L ** 2)
+  onept_err_mom = numpy.zeros(L ** 2)
+  
+  for i in range(L):
+    for j in range(L):
+      x_s[i * L + j] = numpy.sqrt(min(i, L - i) ** 2 + min(j, L - j) ** 2)
+      single_twopt_mom[i * L + j] = numpy.mean(results_single[i, j].real)
+      single_err_mom[i * L + j] = numpy.std(results_single[i, j].real, ddof=1) / numpy.sqrt(N * M)
+      onept_twopt_mom[i * L + j] = numpy.mean(results_onept[i, j].real)
+      onept_err_mom[i * L + j] = numpy.std(results_onept[i, j].real, ddof=1) / numpy.sqrt(N - fitting_size)
+
+  plt.errorbar(x_s, single_twopt_mom, yerr=single_err_mom, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt_mom, yerr=onept_err_mom, label="onept", ls='', capsize=2)
+  plt.legend()
+
+  plt.savefig(f"{directory}momspace_twopt_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  plt.errorbar(x_s, single_twopt_mom, yerr=single_err_mom, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt_mom, yerr=onept_err_mom, label="onept", ls='', capsize=2)
+  plt.legend()
+  plt.yscale('log')
+
+  plt.savefig(f"{directory}momspace_twopt_log_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  ## Let's also reproduce these graphs, but with the onept contribution removed
+  x_s = numpy.zeros(L ** 2)
+  single_twopt = numpy.zeros(L ** 2)
+  single_err = numpy.zeros(L ** 2)
+  onept_twopt = numpy.zeros(L ** 2)
+  onept_err = numpy.zeros(L ** 2)
+  
+  for i in range(L):
+    for j in range(L):
+      x_s[i * L + j] = numpy.sqrt(min(i, L - i) ** 2 + min(j, L - j) ** 2)
+      single_twopt[i * L + j] = numpy.mean(full_results_single[i, j])
+      single_err[i * L + j] = numpy.std(full_results_single[i, j], ddof=1) / numpy.sqrt(N * M)
+      onept_twopt[i * L + j] = numpy.mean(full_results_onept[i, j])
+      onept_err[i * L + j] = numpy.std(full_results_onept[i, j], ddof=1) / numpy.sqrt(N - fitting_size)
+
+  plt.errorbar(x_s, single_twopt - single_spin_mag, yerr=single_err, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt - numpy.mean(onept_twopt), yerr=onept_err, label="onept", ls='', capsize=2)
+  plt.legend()
+
+  plt.savefig(f"{directory}realspace_twopt_connected_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  plt.errorbar(x_s, single_twopt - single_spin_mag, yerr=single_err, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt - numpy.mean(spins_data), yerr=onept_err, label="onept", ls='', capsize=2)
+  plt.legend()
+  plt.yscale('log')
+
+  # Cut the scale for ease of reading
+  plt.ylim(max(10 ** -3, numpy.min(single_twopt - numpy.mean(single_twopt))), 1.1)
+
+  plt.savefig(f"{directory}realspace_twopt_log_connected_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  # Produce the same graph in momentum space
+  x_s = numpy.zeros(L ** 2)
+  single_twopt_mom = numpy.zeros(L ** 2)
+  single_err_mom = numpy.zeros(L ** 2)
+  onept_twopt_mom = numpy.zeros(L ** 2)
+  onept_err_mom = numpy.zeros(L ** 2)
+  
+  for i in range(L):
+    for j in range(L):
+      x_s[i * L + j] = numpy.sqrt(min(i, L - i) ** 2 + min(j, L - j) ** 2)
+      single_twopt_mom[i * L + j] = numpy.mean(results_single[i, j].real)
+      single_err_mom[i * L + j] = numpy.std(results_single[i, j].real, ddof=1) / numpy.sqrt(N * M)
+      onept_twopt_mom[i * L + j] = numpy.mean(results_onept[i, j].real)
+      onept_err_mom[i * L + j] = numpy.std(results_onept[i, j].real, ddof=1) / numpy.sqrt(N - fitting_size)
+
+  plt.errorbar(x_s, single_twopt_mom - single_spin_mag, yerr=single_err_mom, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt_mom - numpy.mean(spins_data), yerr=onept_err_mom, label="onept", ls='', capsize=2)
+  plt.legend()
+
+  plt.savefig(f"{directory}momspace_twopt_connected_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  plt.errorbar(x_s, single_twopt_mom - single_spin_mag, yerr=single_err_mom, label="single", ls='', capsize=2)
+  plt.errorbar(x_s, onept_twopt_mom - numpy.mean(spins_data), yerr=onept_err_mom, label="onept", ls='', capsize=2)
+  plt.legend()
+  plt.yscale('log')
+
+  plt.ylim(max(10 ** -3, numpy.min(single_twopt - numpy.mean(single_twopt_mom))), 1.1)
+
+  plt.savefig(f"{directory}momspace_twopt_log_connected_L{L}_beta{beta:.3f}_N{N}_M{M}.png")
+  plt.close()
+
+  pdb.set_trace()
+
+
+bootstrap(0.5)
+# investigate_delta_beta(0.5)
+# investigate_p_correlator(0.5)
+
+investigate_p_correlator(0.4)
+# pdb.set_trace()
 min_beta = 0.05
 max_beta = 0.8
 no_beta = 16
 x_range = numpy.linspace(min_beta, max_beta, no_beta)
 
-p = Pool(8)
+# p = Pool(8)
 # p.map(investigate_delta_beta, x_range)
-p.map(investigate_p_correlator, x_range)
+# p.map(investigate_p_correlator, x_range)
 # investigate_p_correlator(0.65)
 # investigate_delta_beta(0.2)
 
